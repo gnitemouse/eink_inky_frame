@@ -2,11 +2,13 @@ from pimoroni_i2c import PimoroniI2C
 from pcf85063a import PCF85063A
 import math
 from machine import Pin, PWM, Timer
-import time
 import inky_frame
-import json
-import network
 import os
+import gc
+import ujson
+import time
+import network
+import uhashlib
 
 """
 inky helper
@@ -135,6 +137,42 @@ def directory_exists(dirname):
     except OSError:
         return False
 
+# ----- Check for duplicate files -----
+
+def get_checksum(filename):
+    gc.collect()
+    hash = uhashlib.sha256()
+    with open(filename, 'rb') as f:
+        while chunk := f.read(1024):
+            hash.update(chunk)
+    gc.collect()
+    return hash.digest()
+
+def get_duplicate(directory, filepath):
+    file_checksum = get_checksum(filepath)
+    for file in os.listdir(directory):
+        fp = f'{directory}/{file}'
+        if fp != filepath:
+            if file_checksum == get_checksum(fp):
+                return fp
+    return None
+
+def remove_duplicates(directory):
+    files_by_hash = dict()
+    for file in os.listdir(directory):
+        filepath = f'{directory}/{file}'
+        checksum = get_checksum(filepath)
+        if checksum in files_by_hash:
+            remove_file(filepath)
+        else:
+            files_by_hash[checksum] = filepath
+
+def remove_file(filename):
+    try:
+        print(f'Delete {filename}')
+        os.remove(filename)
+    except Exception as e:
+        print(f'Error: Failed to delete {filename}. {e}')
 
 # ----- Handle App state -----
 
@@ -147,12 +185,12 @@ def clear_state():
 
 def save_state(data):
     with open('/state.json', 'w') as f:
-        f.write(json.dumps(data))
+        f.write(ujson.dumps(data))
         f.flush()
 
 def load_state():
     global state
-    data = json.loads(open('/state.json', 'r').read())
+    data = ujson.loads(open('/state.json', 'r').read())
     if type(data) is dict:
         state = data
 

@@ -1,10 +1,9 @@
 import os
 import gc
-import jpegdec
 import time
-import json
+import jpegdec
+import ujson
 from urllib import urequest
-from ujson import load
 from ucollections import OrderedDict
 import inky_helper as ih
 
@@ -30,18 +29,16 @@ IMG_URL = 'https://pimoroni.github.io/feed2image/nasa-apod-800x480-daily.jpg'
 
 # Store NASA APOD titles {filename:title}
 apod_log = list()
-# Today's date
-date = None
 # Image index
 index = None
 
 def clear_log():
     if file_exists(FILELOG):
-        os.remove(FILELOG)
+        ih.remove_file(FILELOG)
 
 def save_log(apod_log):
     with open(FILELOG, 'w') as f:
-        f.write(json.dumps(dict(apod_log)))
+        f.write(ujson.dumps(dict(apod_log)))
         f.flush()
 
 def load_log():
@@ -52,13 +49,19 @@ def load_log():
         data.close()
     else:
         print(f'Loading log {FILELOG}')
-        data = json.loads(open(FILELOG, 'r').read())
+        data = ujson.loads(open(FILELOG, 'r').read())
         if type(data) is dict:
             # Make sorted list
             apod_log = sorted(data.items())
             print('NASA APOD Log:')
             for file, title in apod_log:
                 print(f'{file}: {title}')
+
+def find_title_in_apod_log(name):
+    for file, title in apod_log:
+        if name == title:
+            return file
+    return None
 
 def update_index(index):
     if index == len(apod_log)-1:
@@ -77,14 +80,10 @@ def get_current_index(filename):
 
 def update():
     global apod_log
-    global date
     global index
 
     # Get index
     index = ih.get_apod_index()
-    if type(index) is not int:
-        print(f'Error: NASA APOD index {index} is invalid. Assume 0.')
-        index = 0
 
     # Check that image directory exists
     if not ih.directory_exists(FILEDIR):
@@ -95,6 +94,13 @@ def update():
 
     if not apod_log:
         load_log()
+    # Check for valid index
+    if type(index) is not int:
+        print(f'Error: NASA APOD index {index} is invalid. Assume 0.')
+        index = 0
+    elif index > len(apod_log) - 1:
+        index = len(apod_log) - 1
+
     if os.listdir(FILEDIR): # Downloaded files exist
         if not apod_log: # No logged files
             for file in sorted(os.listdir(FILEDIR)):
@@ -103,8 +109,7 @@ def update():
         # Delete extra files
         if len(apod_log) > MAXFILES:
             for file, title in apod_log[:len(apod_log)-MAXFILES]:
-                print(f'Removing file {file}')
-                os.remove(file)
+                ih.remove_file(file)
                 apod_log.pop(0)
             index = len(apod_log)-1
     else:
@@ -114,49 +119,62 @@ def update():
     if ih.file_exists(f'{FILEDIR}/{filename}'):
         # Image is already downloaded
         findindex = get_current_index(filename)
-        if findindex > -1:
+        if findindex > -1: # File found in log
             if status: # Cycle to next image
                 index = update_index(index)
             else:
                 index = findindex
         else: # Log doesn't contain file
             print(f'Warning: Image exists but not found in {FILELOG}')
-            apod_log.append((filename, 'Image Title Unavailable'))
+            apod_log.append((filename, '{date} Image Title Unavailable'))
             index = len(apod_log)-1
 
     else: # Download image if not downloaded already
+        title = None
         try:
             # Grab the data
             socket = urequest.urlopen(API_URL)
             gc.collect()
-            j = load(socket)
+            j = ujson.load(socket)
             socket.close()
-            apod_log.append((filename, j['title']))
+            title = j['title']
             gc.collect()
         except OSError as e:
             print(e)
-            apod_log.append((filename, 'Image Title Unavailable'))
+            title = '{date} Image Title Unavailable'
 
-        try:
-            # Grab the image
-            socket = urequest.urlopen(IMG_URL)
-            gc.collect()
+        # Check if image has duplicate in log
+        dupe = find_title_in_apod_log(title)
+        if dupe:
+            print(f'Found duplicate: {dupe} {title}')
+            if status: # Cycle to next image
+                index = update_index(index)
+            else:
+                index = len(apod_log)-1
+        else:
+            try:
+                # Grab the image
+                socket = urequest.urlopen(IMG_URL)
+                gc.collect()
 
-            data = bytearray(1024)
-            with open(f'{FILEDIR}/{filename}', "wb") as f:
-                while True:
-                    if socket.readinto(data) == 0:
-                        break
-                    f.write(data)
-            socket.close()
-            del data
-            gc.collect()
-        except OSError as e:
-            print(e)
-            ih.show_error("Unable to download image")
+                data = bytearray(1024)
+                with open(f'{FILEDIR}/{filename}', "wb") as f:
+                    while True:
+                        if socket.readinto(data) == 0:
+                            break
+                        f.write(data)
+                socket.close()
+                del data
+                gc.collect()
+                apod_log.append((filename, title))
+                index = len(apod_log)-1
+
+            except OSError as e:
+                print(e)
+                ih.show_error(f'Unable to download image "{title}"')
 
     save_log(apod_log)
-    print(apod_log)
+    print(f'Update: {apod_log}')
     ih.update_apod_index(index)
 
 def draw():
